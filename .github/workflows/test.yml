@@ -1,0 +1,29 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax-check plugin.js and every backend module
+        shell: bash
+        run: |
+          node --check dist/plugin.js
+          for f in dist/backend/*.js; do node --check "$f"; done
+
+      - name: Run test suite
+        run: npm test

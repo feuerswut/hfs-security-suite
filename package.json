@@ -1,0 +1,8 @@
+{
+  "name": "security-suite",
+  "private": true,
+  "description": "Combined IP blocklist, rate-limit banning, header blocking, CORS-by-path, dot-path rewriting and tarpit/honeypot HFS plugin",
+  "scripts": {
+    "test": "node test/roaring-smoke.js && node test/plugin-integration.js"
+  }
+}

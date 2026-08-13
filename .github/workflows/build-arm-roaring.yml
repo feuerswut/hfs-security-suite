@@ -1,0 +1,101 @@
+name: Build ARM roaring.node binaries
+
+# Manual, occasional build: cross-compiles the roaring native addon (CRoaring
+# C++ core) for linux-arm64 and linux-armhf via QEMU user-mode emulation,
+# since upstream roaring-node never publishes prebuilt binaries for these
+# platforms. Output .node files are uploaded as artifacts and get vendored
+# into dist-linux-arm64/ and dist-linux-arm/ by a separate manual step.
+on:
+  workflow_dispatch:
+    inputs:
+      arches:
+        description: 'JSON array of arches to build: arm64 and/or armv7'
+        required: false
+        default: '["arm64","armv7"]'
+      node_versions:
+        description: 'JSON array of Node major versions to build'
+        required: false
+        default: '[20,22,23,24]'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(github.event.inputs.arches) }}
+        node_version: ${{ fromJSON(github.event.inputs.node_versions) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Docker's platform name (arm/v7) and Node ABI number differ from our
+      # folder-naming convention (arm, ABI-per-major), so translate once here.
+      - name: Map matrix values to docker platform / ABI / folder arch name
+        id: map
+        run: |
+          case "${{ matrix.arch }}" in
+            arm64) DOCKER_PLATFORM=linux/arm64; NODE_ARCH_NAME=arm64 ;;
+            armv7) DOCKER_PLATFORM=linux/arm/v7; NODE_ARCH_NAME=arm ;;
+            *) echo "unknown arch: ${{ matrix.arch }}"; exit 1 ;;
+          esac
+          case "${{ matrix.node_version }}" in
+            20) ABI=115 ;;
+            22) ABI=127 ;;
+            23) ABI=137 ;;
+            24) ABI=141 ;;
+            *) echo "unknown node_version: ${{ matrix.node_version }}"; exit 1 ;;
+          esac
+          echo "docker_platform=$DOCKER_PLATFORM" >> "$GITHUB_OUTPUT"
+          echo "node_arch_name=$NODE_ARCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "abi=$ABI" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare workspace scratch dirs
+        run: |
+          mkdir -p "_armbuild/${{ matrix.arch }}-${{ matrix.node_version }}"
+          mkdir -p _armbuild-out
+
+      # Runs under QEMU emulation, so a real C++ compile (CRoaring) here can be
+      # slow. --loglevel verbose plus explicit date markers keep the live log
+      # producing visible progress instead of long silent gaps, and the step
+      # timeout fails a genuinely stuck cell fast instead of eating CI budget.
+      - name: Build roaring native addon under QEMU emulation
+        timeout-minutes: 60
+        run: |
+          echo "=== build start: $(date -u) ==="
+          docker run --rm --platform "${{ steps.map.outputs.docker_platform }}" \
+            -v "${{ github.workspace }}:/work" \
+            -w "/work/_armbuild/${{ matrix.arch }}-${{ matrix.node_version }}" \
+            "node:${{ matrix.node_version }}-bookworm" \
+            bash -c '
+              set -ex
+              echo "container start: $(date -u)"
+              apt-get update
+              apt-get install -y python3 make g++
+              npm install roaring@2.7.0 --build-from-source --loglevel verbose
+              echo "npm install done: $(date -u)"
+              find . -name "*.node"
+            '
+          echo "=== build end: $(date -u) ==="
+
+      - name: Locate compiled .node and stage as output
+        run: |
+          SRC=$(find "_armbuild/${{ matrix.arch }}-${{ matrix.node_version }}" -name '*.node' | head -n1)
+          if [ -z "$SRC" ]; then
+            echo "no .node file produced by the build"
+            exit 1
+          fi
+          DEST="_armbuild-out/roaring-node-v${{ steps.map.outputs.abi }}-linux-${{ steps.map.outputs.node_arch_name }}-glibc.node"
+          cp "$SRC" "$DEST"
+          ls -la "$DEST"
+          file "$DEST" || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: roaring-${{ matrix.arch }}-node${{ matrix.node_version }}
+          path: _armbuild-out/*.node
+          if-no-files-found: error
