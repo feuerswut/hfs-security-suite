@@ -36,10 +36,6 @@ exports.configSchema = {
     ip_enableIPv6: {
         type: 'boolean', label: "Enable IPv6", defaultValue: true,
     },
-    ip_whitelist: {
-        type: 'string', label: "Whitelist", multiline: true,
-        helperText: "One IP, CIDR or range per line; never blocked",
-    },
     ip_logBlocked: {
         type: 'boolean', label: "Log blocked IPs", defaultValue: true,
     },
@@ -187,12 +183,13 @@ class IPStore {
 
     // --- whitelist ---------------------------------------------------------
 
+    // `raw` is the `whitelist` array config: [{ ip: 'net_mask string', enabled }, ...]
     setWhitelist(raw) {
-        const lines = Array.isArray(raw)
-            ? raw
-            : String(raw || '').split('\n')
-
-        const entries = lines.map(s => String(s || '').trim()).filter(Boolean)
+        const rows = Array.isArray(raw) ? raw : []
+        const entries = rows
+            .filter(e => e && e.enabled !== false && e.ip)
+            .map(e => String(e.ip).trim())
+            .filter(Boolean)
         this.whitelistV4 = []
         this.whitelistV6 = []
         this.whitelistMatcher = null
@@ -226,6 +223,19 @@ class IPStore {
         if (addr6 !== null && addr6 !== undefined && this.whitelistV6.length)
             return binarySearch(this.whitelistV6, addr6)
         return false
+    }
+
+    // Public entry point for other modules (rate-limiter, tarpit) that only
+    // have a plain ip string, so the whitelist is defined and matched in
+    // exactly one place instead of every feature parsing its own copy.
+    isWhitelisted(ip) {
+        if (typeof ip !== 'string' || !ip) return false
+        const mapped = V4_MAPPED_RE.exec(ip)
+        const target = mapped ? mapped[1] : ip
+        const isV6 = target.includes(':')
+        const ipLong = isV6 ? null : utils.ip2long(target)
+        const addr6 = isV6 ? utils.ipv6ToBigInt(target) : null
+        return this._isWhitelisted(ip, ipLong, addr6) || (target !== ip && this._isWhitelisted(target, ipLong, addr6))
     }
 
     // --- dynamic bans ------------------------------------------------------

@@ -3,8 +3,10 @@
 function rewriteDotPath(ctx, pathRules, onRewrite) {
     const entries = (pathRules || []).filter(e => e.enabled !== false)
 
-    // If a whitelist is configured, skip requests outside enabled prefixes
-    if (entries.length > 0 && !entries.some(e => {
+    // Off by default: dot-rewriting only runs for paths explicitly listed below.
+    if (!entries.length) return
+
+    if (!entries.some(e => {
         const p = e.prefix || ''
         return p && (ctx.path === p || ctx.path.startsWith(p.endsWith('/') ? p : p + '/'))
     }))
@@ -36,7 +38,7 @@ exports.configSchema = {
         type: 'array',
         label: 'Path Prefixes',
         defaultValue: [],
-        helperText: 'Limit dot-rewriting to specific path prefixes. Leave empty to apply to all paths.',
+        helperText: 'Off by default. Dot-rewriting only applies to the path prefixes listed here; add at least one to enable it.',
         fields: {
             prefix: { type: 'string', label: 'Prefix', helperText: 'e.g. /files or /public', $width: 3 },
             enabled: { type: 'boolean', label: 'Enabled', defaultValue: true, $width: 2 },

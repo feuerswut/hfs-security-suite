@@ -13,10 +13,6 @@ exports.configSchema = {
         type: 'number', label: "Ban for", defaultValue: 0, min: 0, xs: 6,
         unit: "seconds", helperText: "0 = infinite",
     },
-    rateLimit_whitelist: {
-        type: 'string', label: "Whitelist", multiline: true,
-        helperText: "one ip per line; masks are supported",
-    },
     rateLimit_errors: {
         type: 'string', label: "Consider only errors",
         placeholder: "no, consider all requests",
@@ -43,19 +39,6 @@ function createRateLimiter(api, ipStore) {
 
     const reqsByIp = new Map()
 
-    let isWhiteListed = () => false
-    const unsubscribe = api.subscribeConfig('rateLimit_whitelist', v => {
-        const entries = String(v || '').split('\n').map(x => x.trim()).filter(Boolean)
-        if (!entries.length) { isWhiteListed = () => false; return }
-        if (typeof misc.makeNetMatcher === 'function') {
-            const m = misc.makeNetMatcher(entries.map(x => `(${x})`).join('|'))
-            isWhiteListed = ip => { try { return !!m(ip) } catch (_) { return false } }
-        } else {
-            const res = entries.map(globToRegExp)
-            isWhiteListed = ip => res.some(r => r.test(ip))
-        }
-    })
-
     const timer = setInterval(() => {
         const cutoff = Date.now() - api.getConfig('rateLimit_seconds') * 1000
         for (const [ip, reqs] of reqsByIp.entries()) {
@@ -70,7 +53,7 @@ function createRateLimiter(api, ipStore) {
 
     // false = exempt, true = already banned, undefined = eligible for counting
     function banState(ip) {
-        if (isLocalHost(ip) || isWhiteListed(ip)) return false
+        if (isLocalHost(ip) || ipStore.isWhitelisted(ip)) return false
         if (ipStore.isDynamicallyBanned(ip)) return true
         return undefined
     }
@@ -104,7 +87,6 @@ function createRateLimiter(api, ipStore) {
 
         unload() {
             clearInterval(timer)
-            if (typeof unsubscribe === 'function') unsubscribe()
             reqsByIp.clear()
         },
     }

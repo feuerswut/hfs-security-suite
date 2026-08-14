@@ -27,7 +27,18 @@ const { createRateLimiter } = rateLimiterModule
 const { createTarpit } = tarpitModule
 const { createBackendClient } = backendClientModule
 
-exports.config = Object.assign({},
+exports.config = Object.assign({
+    whitelist: {
+        type: 'array',
+        label: "Whitelist",
+        defaultValue: [],
+        helperText: "IPs the plugin does not run for at all: no IP blocklist, no rate-limit banning, no header blocking, no CORS, no tarpit. Dot-path rewriting still applies to everyone.",
+        fields: {
+            ip: { type: 'net_mask', label: "IP/CIDR", helperText: "e.g. 192.168.1.0/24 or 10.0.0.5", $width: 4 },
+            enabled: { type: 'boolean', label: "Enabled", defaultValue: true, $width: 2 },
+        },
+    },
+},
     ipStoreModule.configSchema,
     rateLimiterModule.configSchema,
     headerBlocker.configSchema,
@@ -112,7 +123,7 @@ exports.init = api => {
                     break
                 case 'ready': {
                     const ok = await ipStore.load()
-                    ipStore.setWhitelist(api.getConfig('ip_whitelist'))
+                    ipStore.setWhitelist(api.getConfig('whitelist'))
                     if (ok)
                         log(`blocklist ${msg.skipped ? 'unchanged' : 'ready'}: ${msg.totalRanges} IPv4 + ${msg.totalIPv6Ranges} IPv6 ranges, ${msg.diskUsageMB} MB (${msg.format})`)
                     else
@@ -139,14 +150,14 @@ exports.init = api => {
 
     ;(async () => {
         await ipStore.load()
-        ipStore.setWhitelist(api.getConfig('ip_whitelist'))
+        ipStore.setWhitelist(api.getConfig('whitelist'))
 
         unsubscribers.push(api.subscribeConfig('headerBlock_headers', v => {
             headerCompiled = headerBlocker.compileHeaderRules(v)
             for (const e of headerCompiled.errors) log(`header-blocker: ${e}`)
         }))
 
-        unsubscribers.push(api.subscribeConfig('ip_whitelist', v => ipStore.setWhitelist(v)))
+        unsubscribers.push(api.subscribeConfig('whitelist', v => ipStore.setWhitelist(v)))
 
         // Any change to a processing key forces a rebuild; anything else (e.g.
         // logging toggles) just applies on the next request, no rebuild needed.
@@ -193,6 +204,14 @@ exports.init = api => {
         },
 
         middleware(ctx) {
+            // Dot-path rewriting is the one exception: it always runs, even for
+            // whitelisted IPs, since it's a path-mangling utility, not enforcement.
+            dotRewrite.rewriteDotPath(ctx, api.getConfig('dotRewrite_paths'), (oldPath, newPath) => {
+                if (api.getConfig('dotRewrite_logging') !== false) log(`path rewrite ${oldPath} -> ${newPath}`)
+            })
+
+            if (ipStore.isWhitelisted(ctx.ip)) return
+
             const headerMatch = headerBlocker.matchHeaders(ctx, headerCompiled.compiled)
             if (headerMatch) {
                 disconnect(ctx, 'security-suite')
@@ -200,10 +219,6 @@ exports.init = api => {
                 backendClient.reportViolation(ctx.ip, 'headerBlock')
                 return ctx.stop()
             }
-
-            dotRewrite.rewriteDotPath(ctx, api.getConfig('dotRewrite_paths'), (oldPath, newPath) => {
-                if (api.getConfig('dotRewrite_logging') !== false) log(`path rewrite ${oldPath} -> ${newPath}`)
-            })
 
             cors.applyCorsIfNeeded(ctx, api.getConfig('cors_paths'))
 

@@ -16,27 +16,6 @@ function matchesPattern(str, pattern) {
     return new RegExp('^' + regexPattern + '$', 'i').test(str)
 }
 
-function ipToInt(str) {
-    return str.split('.').reduce((acc, octet) => ((acc << 8) + parseInt(octet, 10)) >>> 0, 0)
-}
-
-function isWhitelisted(ip, whitelist, api) {
-    if (!whitelist || whitelist.length === 0) return false
-    for (const entry of whitelist) {
-        if (!entry.enabled || !entry.ip) continue
-        try {
-            const [network, prefix] = entry.ip.split('/')
-            const mask = prefix !== undefined
-                ? (~0 << (32 - parseInt(prefix, 10))) >>> 0
-                : 0xFFFFFFFF
-            if ((ipToInt(ip) & mask) === (ipToInt(network) & mask)) return true
-        } catch (e) {
-            api.log('tarpit: invalid IP/CIDR in whitelist:', entry.ip, e.message)
-        }
-    }
-    return false
-}
-
 function createTarpit(api) {
     // -------------------------------------------------------------------------
     // Stream pool -- hard cap of 20 concurrent tarpit/honeypot streams.
@@ -262,7 +241,6 @@ function createTarpit(api) {
             urlMasks:           api.getConfig('tarpit_urlMasks'),
             responseCodes:      api.getConfig('tarpit_responseCodes'),
             logMatches:         api.getConfig('tarpit_logMatches'),
-            whitelistIPs:       api.getConfig('tarpit_whitelistIPs'),
             honeypotBodySource: api.getConfig('tarpit_honeypotBodySource'),
             honeypotFilePath:   api.getConfig('tarpit_honeypotFilePath'),
         }
@@ -277,8 +255,6 @@ function createTarpit(api) {
         if (!config.enabled) return false
 
         const clientIP = ctx.ip
-
-        if (isWhitelisted(clientIP, config.whitelistIPs, api)) return false
 
         // ---- Honeypot: IP already trapped ----
         if (honeypotIPs.has(clientIP)) {
@@ -406,7 +382,6 @@ function createTarpit(api) {
 
 exports.createTarpit = createTarpit
 exports.matchesPattern = matchesPattern
-exports.isWhitelisted = isWhitelisted
 
 exports.configSchema = {
     tarpit_enabled: {
@@ -520,27 +495,6 @@ exports.configSchema = {
         defaultValue: true,
         helperText: 'Log when tarpit is triggered',
         showIf: values => values.tarpit_enabled,
-    },
-    tarpit_whitelistIPs: {
-        type: 'array',
-        label: 'IP Whitelist',
-        defaultValue: [],
-        helperText: 'IPs that will never be tarpitted (supports CIDR notation)',
-        showIf: values => values.tarpit_enabled,
-        fields: {
-            ip: {
-                type: 'net_mask',
-                label: 'IP/CIDR',
-                helperText: 'e.g., 192.168.1.0/24 or 10.0.0.5',
-                $width: 4,
-            },
-            enabled: {
-                type: 'boolean',
-                label: 'Enabled',
-                defaultValue: true,
-                $width: 2,
-            },
-        },
     },
     tarpit_honeypotBodySource: {
         type: 'select',

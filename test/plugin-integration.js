@@ -234,12 +234,20 @@ async function scenario4(plugin) {
     const instance = plugin.init(api)
     await sleep(150)
 
+    // Off by default: must explicitly list a matching prefix (checked against
+    // the pre-rewrite path) or nothing gets rewritten.
+    api.setConfig('dotRewrite_paths', [{ prefix: '/.secret', enabled: true }])
+
+    const ctxOff = makeCtx({ ip: '192.0.2.41', path: '/.other/file.txt', headers: { 'User-Agent': 'normal-browser/1.0' } })
+    instance.middleware(ctxOff)
+    const offPass = ctxOff.path === '/.other/file.txt'
+
     const ctx = makeCtx({ ip: '192.0.2.40', path: '/.secret/file.txt', headers: { 'User-Agent': 'normal-browser/1.0' } })
     instance.middleware(ctx)
 
-    const pass = ctx.path === '/secret/file.txt' && disconnectCalls.length === 0
-    record('4. Dot-path rewrite', pass,
-        pass ? '' : `path=${ctx.path} disconnectCalls=${disconnectCalls.length}`)
+    const pass = offPass && ctx.path === '/secret/file.txt' && disconnectCalls.length === 0
+    record('4. Dot-path rewrite (off by default, opt-in per prefix)', pass,
+        pass ? '' : `offPass=${offPass} otherPath=${ctxOff.path} path=${ctx.path} disconnectCalls=${disconnectCalls.length}`)
 
     try { instance.unload() } catch (e) { console.log('  [scenario4 unload error]', e.stack) }
 }
@@ -350,6 +358,51 @@ async function scenario8(plugin) {
         pass ? '' : `unloadThrew=${threwUnload && threwUnload.stack} postUnloadThrew=${threwPostUnload && threwPostUnload.stack} hadListener=${!!cbRef}`)
 }
 
+async function scenario9(plugin) {
+    const storageDir = path.join(STORAGE_BASE, 's9')
+    fs.mkdirSync(storageDir, { recursive: true })
+    const { api, disconnectCalls, eventListeners } = makeMockApi(storageDir, plugin.config)
+    const instance = plugin.init(api)
+    await sleep(150)
+
+    const whitelistedIp = '192.0.2.99'
+
+    // Bulk blocklist covers this IP too, but the shared whitelist must win at
+    // the newSocket layer regardless of source (bulk list or dynamic ban).
+    const listFile = path.join(storageDir, 'blocklist.txt')
+    fs.writeFileSync(listFile, '192.0.2.0/24\n')
+    api.setConfig('ip_source', 'file')
+    api.setConfig('ip_filePath', listFile)
+    api.setConfig('whitelist', [{ ip: whitelistedIp, enabled: true }])
+
+    const deadline = Date.now() + 20000
+    while (Date.now() < deadline && !(eventListeners['newSocket'] || []).length) await sleep(150)
+    // give the worker a moment to finish even if the listener was already there
+    await sleep(500)
+
+    const cb = (eventListeners['newSocket'] || [])[0] && eventListeners['newSocket'][0].cb
+    const whitelistedSocketRes = cb ? cb({ ip: whitelistedIp }) : 'NO_LISTENER'
+    const otherInRangeRes = cb ? cb({ ip: '192.0.2.50' }) : 'NO_LISTENER'
+
+    // Header blocking, CORS and tarpit must all be skipped for the whitelisted
+    // IP, but dot-rewrite must still run for it.
+    api.setConfig('headerBlock_headers', [{ name: 'User-Agent', regexp: 'badbot' }])
+    api.setConfig('dotRewrite_paths', [{ prefix: '/.secret', enabled: true }])
+
+    const ctx = makeCtx({ ip: whitelistedIp, path: '/.secret/x.txt', headers: { 'User-Agent': 'badbot-9000' } })
+    instance.middleware(ctx)
+
+    const pass = whitelistedSocketRes === undefined
+        && otherInRangeRes === 'security-suite'
+        && disconnectCalls.length === 0
+        && ctx.path === '/secret/x.txt'
+
+    record('9. Shared whitelist exempts everything except dot-rewrite', pass,
+        pass ? '' : `whitelistedSocketRes=${JSON.stringify(whitelistedSocketRes)} otherInRangeRes=${JSON.stringify(otherInRangeRes)} disconnectCalls=${disconnectCalls.length} path=${ctx.path}`)
+
+    try { instance.unload() } catch (e) { console.log('  [scenario9 unload error]', e.stack) }
+}
+
 // --- main --------------------------------------------------------------
 
 async function main() {
@@ -364,6 +417,7 @@ async function main() {
     await scenario6(plugin)
     await scenario7(plugin)
     await scenario8(plugin)
+    await scenario9(plugin)
 
     const passCount = results.filter(r => r.pass).length
     console.log('\n=== SUMMARY ===')
