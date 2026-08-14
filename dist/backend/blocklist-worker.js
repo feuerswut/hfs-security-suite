@@ -195,7 +195,10 @@ async function run() {
         // --- parse ---
         progress('parsing', 0)
         const bitmap = useRoaring ? new roaring.cls() : null
-        const ipv4Ranges = useRoaring ? null : []
+        // PackedRangeList instead of an array of {start,end} objects: a large
+        // public blocklist can be millions of lines, and per-object overhead
+        // at that scale is what actually exhausts memory, not the sort itself.
+        const ipv4Ranges = useRoaring ? null : new utils.PackedRangeList()
         const ipv6Ranges = []
         let totalIPv4 = 0, totalIPv6 = 0, skipped = 0, ignoredSingles = 0
 
@@ -222,7 +225,7 @@ async function run() {
                 if (size < adv.minRangeSize) { skipped++; return }
 
                 if (useRoaring) addIPv4Range(bitmap, range.start, range.end)
-                else ipv4Ranges.push(range)
+                else ipv4Ranges.push(range.start, range.end)
                 totalIPv4++; mine++
             })
             debug(`[${r.label}] contributed ${mine} ranges`)
@@ -247,13 +250,12 @@ async function run() {
             ipv4Bytes = serialized.length
             await fsp.unlink(path.join(storageDir, 'ipv4-ranges.bin')).catch(() => {})
         } else {
-            const merged = utils.mergeRanges(ipv4Ranges, 1)
-            ipv4Ranges.length = 0
+            const merged = ipv4Ranges.sortAndMerge()
             mergedCount = merged.length
             const buf = Buffer.allocUnsafe(merged.length * 8)
             for (let i = 0; i < merged.length; i++) {
-                buf.writeUInt32BE(merged[i].start >>> 0, i * 8)
-                buf.writeUInt32BE(merged[i].end >>> 0, i * 8 + 4)
+                buf.writeUInt32BE(utils.unpackStart(merged[i]), i * 8)
+                buf.writeUInt32BE(utils.unpackEnd(merged[i]), i * 8 + 4)
             }
             await writeAtomic(storageDir, 'ipv4-ranges.bin', buf)
             ipv4Bytes = buf.length

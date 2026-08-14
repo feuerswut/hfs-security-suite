@@ -2,11 +2,12 @@
 // hfs-dot-rewrite-paths, hfs-ip-blocklist and hfs-tarpit (all GPLv3) into one
 // AGPL-3.0 plugin. See LICENSE for the full attribution notice and texts.
 exports.description = "Combined IP blocklist, rate-limit banning, header blocking, CORS-by-path, dot-path rewriting and tarpit/honeypot in one plugin"
-exports.version = 0.3
+exports.version = 0.4
 exports.apiRequired = 13
 exports.repo = "feuerswut/security-suite"
 exports.author = "feuerswut"
 exports.changelog = [
+    { version: 0.4, message: "Fixed high memory use when building the sorted-ranges fallback for a large blocklist: it built a JS array of {start,end} objects (~50+ bytes/range) both while sorting and permanently afterward. Replaced with a packed typed-array representation (8 bytes/range) for both the worker's build step and the plugin's resident lookup structure, verified against a 500k-range list under a 256MB heap limit." },
     { version: 0.3, message: "Split the config into labeled sections (Whitelist, CORS, Dot-path rewriting, IP Blocklist, Rate-limit banning, Header blocking, Tarpit, Backend sync) so it's clear which field belongs to which feature. Also moved CORS out of the whitelist gate: it and dot-path rewriting are utilities, not enforcement, so both always run regardless of the whitelist." },
     { version: 0.2, message: "Master 'Enable backend integration' toggle, off by default, gating the backend URL/API key/report/fetch fields and their actual runtime behavior." },
     { version: 0.1, message: "Initial release, combining six plugins into one middleware plus one newSocket listener." },

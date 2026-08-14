@@ -56,6 +56,19 @@ function binarySearch(ranges, value) {
     return false
 }
 
+// Same binary search, but over parallel Uint32Array start/end lanes instead
+// of an array of {start,end} objects -- see the comment on this.ipv4Ranges.
+function binarySearchTyped(starts, ends, count, value) {
+    let lo = 0, hi = count - 1
+    while (lo <= hi) {
+        const mid = (lo + hi) >>> 1
+        if (value < starts[mid]) hi = mid - 1
+        else if (value > ends[mid]) lo = mid + 1
+        else return true
+    }
+    return false
+}
+
 function readBigInt128(buf, offset) {
     return (buf.readBigUInt64BE(offset) << 64n) | buf.readBigUInt64BE(offset + 8)
 }
@@ -65,8 +78,12 @@ class IPStore {
         this.api = api
         this.storageDir = api && api.storageDir
         this.bitmap = null          // RoaringBitmap32, O(1) IPv4
-        this.ipv4Ranges = null      // sorted {start,end} numbers, O(log n)
-        this.ipv6Ranges = null      // sorted {start,end} BigInts
+        // { starts: Uint32Array, ends: Uint32Array, length } instead of an array
+        // of {start,end} objects: this is held in memory for the plugin's whole
+        // lifetime, so for a multi-million-range list the per-object overhead of
+        // a plain array would be a permanent, not just transient, memory cost.
+        this.ipv4Ranges = null      // sorted parallel Uint32Arrays, O(log n)
+        this.ipv6Ranges = null      // sorted {start,end} BigInts (IPv6 lists are small in practice)
         this.meta = null
         this.ready = false
         this.bulkFormat = null      // 'roaring' | 'ranges' | null
@@ -159,10 +176,13 @@ class IPStore {
         const buf = await fsp.readFile(p)
         if (buf.length % 8) { this._log('ipv4-ranges.bin is truncated'); return false }
         const count = buf.length / 8
-        const out = new Array(count)
-        for (let i = 0; i < count; i++)
-            out[i] = { start: buf.readUInt32BE(i * 8), end: buf.readUInt32BE(i * 8 + 4) }
-        this.ipv4Ranges = out
+        const starts = new Uint32Array(count)
+        const ends = new Uint32Array(count)
+        for (let i = 0; i < count; i++) {
+            starts[i] = buf.readUInt32BE(i * 8)
+            ends[i] = buf.readUInt32BE(i * 8 + 4)
+        }
+        this.ipv4Ranges = { starts, ends, length: count }
         this.bulkFormat = 'ranges'
         this._debug(`IPv4 sorted ranges loaded: ${count} merged ranges`)
         return true
@@ -342,7 +362,7 @@ class IPStore {
             if (this.bitmap.has(ipLong)) return { blocked: true, source: 'bulk' }
             return { blocked: false }
         }
-        if (this.ipv4Ranges && binarySearch(this.ipv4Ranges, ipLong))
+        if (this.ipv4Ranges && binarySearchTyped(this.ipv4Ranges.starts, this.ipv4Ranges.ends, this.ipv4Ranges.length, ipLong))
             return { blocked: true, source: 'bulk' }
         return { blocked: false }
     }
@@ -365,7 +385,7 @@ class IPStore {
 
     getStats() {
         let bytes = 0
-        if (this.ipv4Ranges) bytes += this.ipv4Ranges.length * 48
+        if (this.ipv4Ranges) bytes += this.ipv4Ranges.length * 8 // two Uint32 lanes
         if (this.ipv6Ranges) bytes += this.ipv6Ranges.length * 80
         return {
             ready: this.ready,

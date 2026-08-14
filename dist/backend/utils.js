@@ -164,7 +164,9 @@ function parseIPRange(line) {
 }
 
 // Sorts in place and coalesces touching/overlapping ranges. Works for both the
-// Number (IPv4) and BigInt (IPv6) variants; `one` selects 1 or 1n.
+// Number (IPv4) and BigInt (IPv6) variants; `one` selects 1 or 1n. Only used
+// for small lists (the admin-entered whitelist) -- see PackedRangeList below
+// for anything that scales to a real blocklist's size.
 function mergeRanges(ranges, one) {
     if (!ranges.length) return []
     ranges.sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0))
@@ -179,9 +181,67 @@ function mergeRanges(ranges, one) {
     return out
 }
 
+// A JS array of {start,end} objects costs ~50+ bytes/entry with V8's object
+// overhead -- fine for a few dozen whitelist rows, but a multi-million-range
+// public blocklist (exactly the case that needs the sorted-ranges fallback
+// in the first place, since roaring bitmaps handle the small/native case
+// better already) can exhaust memory on constrained/32-bit devices well
+// before it gets anywhere near the OS. Packing each IPv4 range into a single
+// BigUint64Array element (start in the high 32 bits, end in the low 32 bits)
+// costs a flat 8 bytes/range, sorts natively (BigUint64Array's default sort
+// is ascending numeric, so packing start into the high bits sorts by start
+// for free), and merges in place with no extra output array.
+class PackedRangeList {
+    constructor(initialCapacity) {
+        this.length = 0
+        this.buf = new BigUint64Array(initialCapacity || 4096)
+    }
+
+    push(start, end) {
+        if (this.length >= this.buf.length) {
+            const grown = new BigUint64Array(this.buf.length * 2)
+            grown.set(this.buf)
+            this.buf = grown
+        }
+        this.buf[this.length++] = (BigInt(start) << 32n) | BigInt(end)
+    }
+
+    // Sorts and coalesces touching/overlapping ranges in place. Returns a
+    // subarray view of just the merged entries -- no allocation beyond
+    // whatever growth already reserved.
+    sortAndMerge() {
+        if (!this.length) return this.buf.subarray(0, 0)
+        const view = this.buf.subarray(0, this.length)
+        view.sort()
+
+        let w = 0
+        let curStart = view[0] >> 32n
+        let curEnd = view[0] & 0xFFFFFFFFn
+        for (let i = 1; i < view.length; i++) {
+            const packed = view[i]
+            const s = packed >> 32n
+            const e = packed & 0xFFFFFFFFn
+            if (s <= curEnd + 1n) {
+                if (e > curEnd) curEnd = e
+            } else {
+                view[w++] = (curStart << 32n) | curEnd
+                curStart = s
+                curEnd = e
+            }
+        }
+        view[w++] = (curStart << 32n) | curEnd
+        this.length = w
+        return view.subarray(0, w)
+    }
+}
+
+function unpackStart(packed) { return Number(packed >> 32n) }
+function unpackEnd(packed) { return Number(packed & 0xFFFFFFFFn) }
+
 module.exports = {
     ip2long, long2ip, isLocalIP,
     ipv6ToBigInt, isLocalIPv6,
     parseIPRange, parseIPv4CIDR, parseIPv6CIDR,
     mergeRanges,
+    PackedRangeList, unpackStart, unpackEnd,
 }
