@@ -39,6 +39,26 @@ function extractClass(addon) {
     return cls
 }
 
+// A native addon can load successfully and expose all the right method names
+// (extractClass above) while still being functionally broken for a given
+// platform -- e.g. a cross-compiled 32-bit ARM build that throws "Invalid
+// RoaringBitmap32 object" the moment addRange is actually called, even on
+// trivial input. Only a method-name check would never catch that; actually
+// exercising the class is the only way to know it works before trusting it.
+function selfTest(cls) {
+    try {
+        const b = new cls()
+        b.addRange(0, 100)
+        if (!b.has(0) || !b.has(99) || b.has(100)) return false
+        b.runOptimize()
+        const buf = b.serialize(false)
+        const b2 = cls.deserialize(buf, false)
+        return b2.has(50) && !b2.has(200)
+    } catch (_) {
+        return false
+    }
+}
+
 let cached
 
 function loadRoaring() {
@@ -51,8 +71,10 @@ function loadRoaring() {
     if (fs.existsSync(prebuiltPath)) {
         try {
             const cls = extractClass(require(prebuiltPath))
-            if (cls) return (cached = { cls, source: 'prebuilt', detail: dirName })
-            problems.push(`prebuilt ${dirName} loaded but exports no usable RoaringBitmap32`)
+            if (cls && selfTest(cls)) return (cached = { cls, source: 'prebuilt', detail: dirName })
+            problems.push(cls
+                ? `prebuilt ${dirName} loaded but failed a functional self-test (addRange/has/serialize) -- likely a broken build for this platform`
+                : `prebuilt ${dirName} loaded but exports no usable RoaringBitmap32`)
         } catch (err) {
             problems.push(`prebuilt ${dirName} failed to load: ${err.message}`)
         }
