@@ -173,11 +173,11 @@ exports.configSchema = {
     },
     // Named with a leading underscore (not the "backend_" prefix used by the rest of this
     // section) so HFS's "export without passwords" feature automatically strips it; see
-    // FieldDescriptor rules in dev-plugins.md.
+    // FieldDescriptor rules in dev-plugins.md. Plain text field on purpose -- a masked
+    // browser password input just triggers save-password prompts for no benefit here.
     _backend_apiKey: {
         type: 'string',
         label: 'API Key',
-        inputProps: { type: 'password' },
         showIf: values => !!values.backend_enabled,
     },
     backend_reportEnabled: {
