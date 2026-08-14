@@ -21,7 +21,7 @@ function createBackendClient(api) {
     // flushed on an interval is both cheaper and more private (only counts, not events).
     function reportViolation(ip, category, extra) {
         if (!ip || !category) return
-        if (!api.getConfig('backend_reportEnabled')) return
+        if (!api.getConfig('backend_enabled') || !api.getConfig('backend_reportEnabled')) return
         const now = Date.now()
         let entry = violations.get(ip)
         if (!entry) {
@@ -81,7 +81,7 @@ function createBackendClient(api) {
     }
 
     async function flushReports() {
-        if (!api.getConfig('backend_reportEnabled')) return
+        if (!api.getConfig('backend_enabled') || !api.getConfig('backend_reportEnabled')) return
         const url = api.getConfig('backend_url')
         const apiKey = api.getConfig('_backend_apiKey')
         if (!url || !apiKey) return
@@ -106,7 +106,7 @@ function createBackendClient(api) {
     }
 
     async function fetchBlocklist() {
-        if (!api.getConfig('backend_fetchEnabled')) return
+        if (!api.getConfig('backend_enabled') || !api.getConfig('backend_fetchEnabled')) return
         const url = api.getConfig('backend_url')
         if (!url) return
         try {
@@ -159,10 +159,17 @@ function createBackendClient(api) {
 exports.createBackendClient = createBackendClient
 
 exports.configSchema = {
+    backend_enabled: {
+        type: 'boolean',
+        defaultValue: false,
+        label: 'Enable backend integration',
+        helperText: 'Master switch. Off by default: no data ever leaves this server, and nothing is fetched, unless this is on.',
+    },
     backend_url: {
         type: 'string',
         label: 'Backend URL',
         helperText: 'Leave empty to disable all backend integration',
+        showIf: values => !!values.backend_enabled,
     },
     // Named with a leading underscore (not the "backend_" prefix used by the rest of this
     // section) so HFS's "export without passwords" feature automatically strips it; see
@@ -171,12 +178,14 @@ exports.configSchema = {
         type: 'string',
         label: 'API Key',
         inputProps: { type: 'password' },
+        showIf: values => !!values.backend_enabled,
     },
     backend_reportEnabled: {
         type: 'boolean',
         defaultValue: false,
         label: 'Report anonymized violations',
         helperText: 'Periodically send aggregated counts of violations (ip, category, counts, timestamps) to the backend',
+        showIf: values => !!values.backend_enabled,
     },
     backend_reportExtendedFields: {
         type: 'boolean',
@@ -197,6 +206,7 @@ exports.configSchema = {
         defaultValue: false,
         label: 'Fetch shared blocklist',
         helperText: 'Periodically download a shared blocklist (CIDR/range list) from the backend',
+        showIf: values => !!values.backend_enabled,
     },
     backend_fetchInterval: {
         type: 'number',

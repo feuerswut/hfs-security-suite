@@ -2,12 +2,13 @@
 // hfs-dot-rewrite-paths, hfs-ip-blocklist and hfs-tarpit (all GPLv3) into one
 // AGPL-3.0 plugin. See LICENSE for the full attribution notice and texts.
 exports.description = "Combined IP blocklist, rate-limit banning, header blocking, CORS-by-path, dot-path rewriting and tarpit/honeypot in one plugin"
-exports.version = 1
+exports.version = 0.2
 exports.apiRequired = 12.3
 exports.repo = "feuerswut/security-suite"
 exports.author = "feuerswut"
 exports.changelog = [
-    { version: 1, message: "Initial release, combining six plugins into one middleware plus one newSocket listener." },
+    { version: 0.2, message: "Master 'Enable backend integration' toggle, off by default, gating the backend URL/API key/report/fetch fields and their actual runtime behavior." },
+    { version: 0.1, message: "Initial release, combining six plugins into one middleware plus one newSocket listener." },
 ]
 
 const fs = require('fs')
@@ -52,7 +53,7 @@ exports.configDialog = { maxWidth: 'lg' }
 
 // Config keys that change what the bulk blocklist looks like on disk -- a
 // change to any of these forces a full worker rebuild, not just a reload.
-const PROCESSING_KEYS = ['ip_source', 'ip_url', 'ip_filePath', 'ip_lookupMode', 'ip_enableIPv6', 'backend_fetchEnabled']
+const PROCESSING_KEYS = ['ip_source', 'ip_url', 'ip_filePath', 'ip_lookupMode', 'ip_enableIPv6', 'backend_enabled', 'backend_fetchEnabled']
 
 function processingSignature(config) {
     return PROCESSING_KEYS.map(k => `${k}=${JSON.stringify(config[k])}`).join('|')
@@ -82,7 +83,7 @@ exports.init = api => {
         } else if (config.ip_url) {
             sources.push({ type: 'url', location: config.ip_url, label: 'configured-url' })
         }
-        if (config.backend_fetchEnabled) {
+        if (config.backend_enabled && config.backend_fetchEnabled) {
             const feedPath = backendClient.getFeedFilePath()
             if (fs.existsSync(feedPath)) sources.push({ type: 'file', location: feedPath, label: 'backend-feed' })
         }
@@ -172,9 +173,10 @@ exports.init = api => {
         }))
 
         backendClient.onFeedUpdated(() => startWorker(true))
-        if (api.getConfig('backend_reportEnabled') || api.getConfig('backend_fetchEnabled')) backendClient.start()
-        unsubscribers.push(api.subscribeConfig(['backend_reportEnabled', 'backend_fetchEnabled'], v => {
-            if (v.backend_reportEnabled || v.backend_fetchEnabled) backendClient.start()
+        const backendShouldRun = v => v.backend_enabled && (v.backend_reportEnabled || v.backend_fetchEnabled)
+        if (backendShouldRun(api.getConfig())) backendClient.start()
+        unsubscribers.push(api.subscribeConfig(['backend_enabled', 'backend_reportEnabled', 'backend_fetchEnabled'], v => {
+            if (backendShouldRun(v)) backendClient.start()
             else backendClient.stop()
         }))
     })()
