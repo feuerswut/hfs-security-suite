@@ -2,9 +2,9 @@
 // hfs-dot-rewrite-paths, hfs-ip-blocklist and hfs-tarpit (all GPLv3) into one
 // AGPL-3.0 plugin. See LICENSE for the full attribution notice and texts.
 exports.description = "Combined IP blocklist, rate-limit banning, header blocking, CORS-by-path, dot-path rewriting and tarpit/honeypot in one plugin"
-exports.version = 0.5
+exports.version = 0.6
 exports.apiRequired = 13
-exports.repo = "feuerswut/security-suite"
+exports.repo = "feuerswut/hfs-security-suite"
 exports.author = "feuerswut"
 exports.changelog = [
     { version: 0.5, message: "The roaring-bitmap loader only checked that a native build exported the right method names, not that they actually worked -- a cross-compiled 32-bit ARM (armv7) build loaded fine but threw 'Invalid RoaringBitmap32 object' the moment addRange was called during parsing. It now runs a real functional self-test (add/has/serialize/deserialize a tiny bitmap) before trusting any prebuilt binary, so a broken build on any platform now falls back to the sorted-ranges lookup automatically instead of crashing." },
