@@ -8,7 +8,7 @@ exports.repo = "feuerswut/hfs-security-suite"
 exports.author = "feuerswut"
 exports.depend = [{ repo: "feuerswut/hfs-shared" }]
 exports.changelog = [
-    { version: 0.7, message: "Logging now goes through hfs-shared's batched logger (flushed every couple of minutes instead of one line per connection) and each feature -- IP blocklist, rate-limit banning, header blocking, dot-path rewriting, tarpit and backend sync -- has its own 'Enable logging' / 'Verbose logging' pair instead of the old scattered, inconsistent toggles. The socket-level block line also no longer prints the meaningless internal source tag '(bulk)'; it now says which feature blocked the connection." },
+    { version: 0.7, message: "Logging now goes through hfs-shared's batched logger, which clusters near-identical lines (e.g. repeated 'blocked at socket' hits) into one summarized line instead of one per event, flushed every couple of minutes instead of per connection. Each feature -- IP blocklist, rate-limit banning, header blocking, dot-path rewriting, tarpit and backend sync -- has its own 'Enable logging' / 'Verbose logging' pair instead of the old scattered, inconsistent toggles, and the feature name is appended once at the end of the line instead of a bracketed prefix. The socket-level block line also no longer prints the meaningless internal source tag '(bulk)'; the feature name it's logged under already says why it was blocked." },
     { version: 0.5, message: "The roaring-bitmap loader only checked that a native build exported the right method names, not that they actually worked -- a cross-compiled 32-bit ARM (armv7) build loaded fine but threw 'Invalid RoaringBitmap32 object' the moment addRange was called during parsing. It now runs a real functional self-test (add/has/serialize/deserialize a tiny bitmap) before trusting any prebuilt binary, so a broken build on any platform now falls back to the sorted-ranges lookup automatically instead of crashing." },
     { version: 0.4, message: "Fixed high memory use when building the sorted-ranges fallback for a large blocklist: it built a JS array of {start,end} objects (~50+ bytes/range) both while sorting and permanently afterward. Replaced with a packed typed-array representation (8 bytes/range) for both the worker's build step and the plugin's resident lookup structure, verified against a 500k-range list under a 256MB heap limit." },
     { version: 0.3, message: "Split the config into labeled sections (Whitelist, CORS, Dot-path rewriting, IP Blocklist, Rate-limit banning, Header blocking, Tarpit, Backend sync) so it's clear which field belongs to which feature. Also moved CORS out of the whitelist gate: it and dot-path rewriting are utilities, not enforcement, so both always run regardless of the whitelist." },
@@ -124,7 +124,10 @@ exports.init = api => {
     function makeLogger(category, label) {
         return function (msg) {
             if (!api.getConfig(`${category}_logEnabled`)) return
-            const line = `[${label}] ${msg}`
+            // HFS already prefixes the plugin name; the feature name goes at the
+            // end instead of a second bracketed prefix, to avoid "plugin: [feature]
+            // message" stutter.
+            const line = `${msg} (${label})`
             if (api.getConfig(`${category}_logVerbose`)) rawLogger.logNow(line)
             else rawLogger.log(line)
         }
@@ -265,9 +268,10 @@ exports.init = api => {
         const res = ipStore.checkIP(ip)
         if (!res.blocked) return
         // Log under whichever feature actually made the call, instead of the old
-        // internal source tag ('bulk'/'dynamic') that meant nothing to a reader.
-        if (res.source === 'dynamic') logRateLimit(`blocked at socket: ${ip} (rate-limit ban)`)
-        else logIpBlock(`blocked at socket: ${ip} (IP blocklist)`)
+        // internal source tag ('bulk'/'dynamic') that meant nothing to a reader --
+        // the category name the logger appends already says why.
+        if (res.source === 'dynamic') logRateLimit(`blocked at socket: ${ip}`)
+        else logIpBlock(`blocked at socket: ${ip}`)
         backendClient.reportViolation(ip, res.source === 'dynamic' ? 'rateLimitBan' : 'ipBlocklist')
         return 'security-suite'
     })
