@@ -6,7 +6,8 @@ const path = require('path')
 const fs = require('fs')
 const crypto = require('crypto')
 
-function createBackendClient(api) {
+function createBackendClient(api, log) {
+    log = log || (() => {})
     let violations = new Map() // ip -> { categories: Map<category,count>, firstSeen, lastSeen, extra? }
     let reportTimer = null
     let fetchTimer = null
@@ -98,10 +99,10 @@ function createBackendClient(api) {
                 }, authHeaders()),
             }, payload)
             if (res.statusCode < 200 || res.statusCode >= 300)
-                api.log('backend-client: report POST failed with status', res.statusCode)
+                log(`report POST failed with status ${res.statusCode}`)
         } catch (e) {
             // Best-effort telemetry: drop the batch on failure, don't retry-storm the backend.
-            api.log('backend-client: report POST error', String(e && e.message || e))
+            log(`report POST error: ${String(e && e.message || e)}`)
         }
     }
 
@@ -112,7 +113,7 @@ function createBackendClient(api) {
         try {
             const res = await httpRequest(joinUrl(url, '/v1/blocklist'), { method: 'GET', headers: authHeaders() })
             if (res.statusCode < 200 || res.statusCode >= 300) {
-                api.log('backend-client: blocklist GET failed with status', res.statusCode)
+                log(`blocklist GET failed with status ${res.statusCode}`)
                 return
             }
             const text = res.body
@@ -122,9 +123,9 @@ function createBackendClient(api) {
             fs.renameSync(feedTmpPath, feedFilePath)
             lastFeedHash = hash
             if (feedUpdatedCallback)
-                try { feedUpdatedCallback() } catch (e) { api.log('backend-client: onFeedUpdated callback error', String(e && e.message || e)) }
+                try { feedUpdatedCallback() } catch (e) { log(`onFeedUpdated callback error: ${String(e && e.message || e)}`) }
         } catch (e) {
-            api.log('backend-client: blocklist GET error', String(e && e.message || e))
+            log(`blocklist GET error: ${String(e && e.message || e)}`)
         }
     }
 
@@ -214,5 +215,19 @@ exports.configSchema = {
         min: 300,
         label: 'Fetch interval (seconds)',
         showIf: values => !!values.backend_fetchEnabled,
+    },
+    backend_logEnabled: {
+        type: 'boolean',
+        defaultValue: true,
+        label: 'Enable logging',
+        helperText: 'Log report/fetch failures (batched, flushed every couple of minutes).',
+        showIf: values => !!values.backend_enabled,
+    },
+    backend_logVerbose: {
+        type: 'boolean',
+        defaultValue: false,
+        label: 'Verbose logging',
+        helperText: 'Log every event immediately instead of batching.',
+        showIf: values => !!values.backend_enabled && !!values.backend_logEnabled,
     },
 }

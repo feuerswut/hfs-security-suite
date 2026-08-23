@@ -28,11 +28,18 @@ function rewriteDotPath(ctx, pathRules, onRewrite) {
 exports.rewriteDotPath = rewriteDotPath
 
 exports.configSchema = {
-    dotRewrite_logging: {
+    dotRewrite_logEnabled: {
         type: 'boolean',
-        label: 'Enable Logging',
+        label: 'Enable logging',
         defaultValue: true,
-        helperText: 'Log path rewrites to the console.',
+        helperText: 'Log path rewrites (batched, flushed every couple of minutes).',
+    },
+    dotRewrite_logVerbose: {
+        type: 'boolean',
+        label: 'Verbose logging',
+        defaultValue: false,
+        helperText: 'Log every event immediately instead of batching.',
+        showIf: v => v.dotRewrite_logEnabled,
     },
     dotRewrite_paths: {
         type: 'array',

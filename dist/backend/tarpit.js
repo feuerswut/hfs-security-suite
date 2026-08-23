@@ -16,7 +16,8 @@ function matchesPattern(str, pattern) {
     return new RegExp('^' + regexPattern + '$', 'i').test(str)
 }
 
-function createTarpit(api) {
+function createTarpit(api, log) {
+    log = log || (() => {})
     // -------------------------------------------------------------------------
     // Stream pool -- hard cap of 20 concurrent tarpit/honeypot streams.
     // Map preserves insertion order so the first entry is always the oldest.
@@ -28,7 +29,7 @@ function createTarpit(api) {
     function registerStream(ip, killFn) {
         if (streamPool.size >= MAX_STREAMS) {
             const [oldestId, oldest] = streamPool.entries().next().value
-            api.log(`tarpit: pool full (${MAX_STREAMS}), evicting oldest stream id=${oldestId} ip=${oldest.ip}`)
+            log(`pool full (${MAX_STREAMS}), evicting oldest stream id=${oldestId} ip=${oldest.ip}`)
             oldest.kill()
             releaseStream(oldestId) // force-remove; 'close' will be a no-op
         }
@@ -37,13 +38,13 @@ function createTarpit(api) {
         const timeoutTimer = setTimeout(() => {
             const entry = streamPool.get(id)
             if (!entry) return
-            api.log(`tarpit: stream id=${id} ip=${entry.ip} killed after 10-minute timeout`)
+            log(`stream id=${id} ip=${entry.ip} killed after 10-minute timeout`)
             entry.kill()
             releaseStream(id)
         }, STREAM_TIMEOUT_MS)
 
         streamPool.set(id, { kill: killFn, timeoutTimer, startTime: Date.now(), ip })
-        api.log(`tarpit: stream id=${id} registered for ip=${ip} (pool size=${streamPool.size})`)
+        log(`stream id=${id} registered for ip=${ip} (pool size=${streamPool.size})`)
         return id
     }
 
@@ -52,7 +53,7 @@ function createTarpit(api) {
         if (!entry) return
         clearTimeout(entry.timeoutTimer)
         streamPool.delete(id)
-        api.log(`tarpit: stream id=${id} released (pool size=${streamPool.size})`)
+        log(`stream id=${id} released (pool size=${streamPool.size})`)
     }
 
     // -------------------------------------------------------------------------
@@ -60,17 +61,17 @@ function createTarpit(api) {
     // -------------------------------------------------------------------------
     const honeypotIPs = new Map() // ip -> { timer, startTime }
 
-    function activateHoneypot(ip, duration, logMatches) {
+    function activateHoneypot(ip, duration) {
         if (honeypotIPs.has(ip)) {
             clearTimeout(honeypotIPs.get(ip).timer)
         }
         const timer = setTimeout(() => {
             honeypotIPs.delete(ip)
-            if (logMatches) api.log(`Honeypot deactivated for ${ip} (timeout)`)
+            log(`honeypot deactivated for ${ip} (timeout)`)
         }, duration * 1000)
 
         honeypotIPs.set(ip, { timer, startTime: Date.now() })
-        if (logMatches) api.log(`Honeypot activated for ${ip} (duration: ${duration}s)`)
+        log(`honeypot activated for ${ip} (duration: ${duration}s)`)
     }
 
     function resetHoneypotTimer(ip, duration) {
@@ -92,14 +93,14 @@ function createTarpit(api) {
         try {
             const buffer = fs.readFileSync(filePath)
             if (!buffer.length) {
-                api.log(`tarpit: honeypot file "${filePath}" is empty, falling back to garbage bytes`)
+                log(`honeypot file "${filePath}" is empty, falling back to garbage bytes`)
                 fileBufferCache = null
                 return null
             }
             fileBufferCache = { path: filePath, buffer }
             return buffer
         } catch (e) {
-            api.log(`tarpit: honeypot file "${filePath}" could not be read (${e.message}), falling back to garbage bytes`)
+            log(`honeypot file "${filePath}" could not be read (${e.message}), falling back to garbage bytes`)
             fileBufferCache = null
             return null
         }
@@ -240,7 +241,6 @@ function createTarpit(api) {
             userAgentMasks:     api.getConfig('tarpit_userAgentMasks'),
             urlMasks:           api.getConfig('tarpit_urlMasks'),
             responseCodes:      api.getConfig('tarpit_responseCodes'),
-            logMatches:         api.getConfig('tarpit_logMatches'),
             honeypotBodySource: api.getConfig('tarpit_honeypotBodySource'),
             honeypotFilePath:   api.getConfig('tarpit_honeypotFilePath'),
         }
@@ -259,7 +259,7 @@ function createTarpit(api) {
         // ---- Honeypot: IP already trapped ----
         if (honeypotIPs.has(clientIP)) {
             resetHoneypotTimer(clientIP, config.honeypotDuration)
-            if (config.logMatches) api.log(`Honeypot response sent to ${clientIP} (timer reset)`)
+            log(`honeypot response sent to ${clientIP} (timer reset)`)
 
             ctx.status = 200
             ctx.type = 'text/plain'
@@ -299,7 +299,7 @@ function createTarpit(api) {
 
         // ---- Honeypot activation ----
         if (shouldActivateHoneypot) {
-            activateHoneypot(clientIP, config.honeypotDuration, config.logMatches)
+            activateHoneypot(clientIP, config.honeypotDuration)
             ctx.status = 200
             ctx.type = 'text/plain'
             ctx.body = createHoneypotStream(clientIP, config.honeypotSpeed, config.honeypotBodySource, config.honeypotFilePath)
@@ -344,7 +344,7 @@ function createTarpit(api) {
         if (!shouldTarpit) return undefined
 
         return async () => {
-            if (config.logMatches) api.log(`Tarpit activated for ${clientIP}: ${reason}`)
+            log(`tarpit activated for ${clientIP}: ${reason}`)
 
             const body = ctx.body
             if (!body) return
@@ -374,7 +374,7 @@ function createTarpit(api) {
         }
         honeypotIPs.clear()
 
-        api.log('tarpit: unloaded, all streams and honeypot timers cleared')
+        log('unloaded, all streams and honeypot timers cleared')
     }
 
     return { checkPre, wrapUpstream, unload }
@@ -489,12 +489,19 @@ exports.configSchema = {
             },
         },
     },
-    tarpit_logMatches: {
+    tarpit_logEnabled: {
         type: 'boolean',
-        label: 'Log Tarpit Activations',
+        label: 'Enable logging',
         defaultValue: true,
-        helperText: 'Log when tarpit is triggered',
+        helperText: 'Log tarpit/honeypot activations and stream pool activity (batched, flushed every couple of minutes).',
         showIf: values => values.tarpit_enabled,
+    },
+    tarpit_logVerbose: {
+        type: 'boolean',
+        label: 'Verbose logging',
+        defaultValue: false,
+        helperText: 'Log every event immediately instead of batching.',
+        showIf: values => values.tarpit_enabled && values.tarpit_logEnabled,
     },
     tarpit_honeypotBodySource: {
         type: 'select',

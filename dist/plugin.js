@@ -2,11 +2,13 @@
 // hfs-dot-rewrite-paths, hfs-ip-blocklist and hfs-tarpit (all GPLv3) into one
 // AGPL-3.0 plugin. See LICENSE for the full attribution notice and texts.
 exports.description = "Combined IP blocklist, rate-limit banning, header blocking, CORS-by-path, dot-path rewriting and tarpit/honeypot in one plugin"
-exports.version = 0.6
+exports.version = 0.7
 exports.apiRequired = 13
 exports.repo = "feuerswut/hfs-security-suite"
 exports.author = "feuerswut"
+exports.depend = [{ repo: "feuerswut/hfs-shared" }]
 exports.changelog = [
+    { version: 0.7, message: "Logging now goes through hfs-shared's batched logger (flushed every couple of minutes instead of one line per connection) and each feature -- IP blocklist, rate-limit banning, header blocking, dot-path rewriting, tarpit and backend sync -- has its own 'Enable logging' / 'Verbose logging' pair instead of the old scattered, inconsistent toggles. The socket-level block line also no longer prints the meaningless internal source tag '(bulk)'; it now says which feature blocked the connection." },
     { version: 0.5, message: "The roaring-bitmap loader only checked that a native build exported the right method names, not that they actually worked -- a cross-compiled 32-bit ARM (armv7) build loaded fine but threw 'Invalid RoaringBitmap32 object' the moment addRange was called during parsing. It now runs a real functional self-test (add/has/serialize/deserialize a tiny bitmap) before trusting any prebuilt binary, so a broken build on any platform now falls back to the sorted-ranges lookup automatically instead of crashing." },
     { version: 0.4, message: "Fixed high memory use when building the sorted-ranges fallback for a large blocklist: it built a JS array of {start,end} objects (~50+ bytes/range) both while sorting and permanently afterward. Replaced with a packed typed-array representation (8 bytes/range) for both the worker's build step and the plugin's resident lookup structure, verified against a 500k-range list under a 256MB heap limit." },
     { version: 0.3, message: "Split the config into labeled sections (Whitelist, CORS, Dot-path rewriting, IP Blocklist, Rate-limit banning, Header blocking, Tarpit, Backend sync) so it's clear which field belongs to which feature. Also moved CORS out of the whitelist gate: it and dot-path rewriting are utilities, not enforcement, so both always run regardless of the whitelist." },
@@ -107,10 +109,37 @@ function processingSignature(config) {
 exports.init = api => {
     const { disconnect } = api.require('./connections')
 
-    const ipStore = new IPStore(api)
+    const shared = api.customApiCall('hfsShared')[0]
+    shared.requireVersion('^1.0.0')
+    // Flushed at most every 2 minutes (see batchWindowMs) instead of one
+    // api.log() call per connection -- a noisy source (a scanner hammering a
+    // blocked range) used to flood the log with one line per rejected socket.
+    const rawLogger = shared.createLogger(api, { tag: 'security-suite', batchWindowMs: 120_000 })
+
+    // One enable/verbose toggle pair per feature category (matching the config
+    // sections below), instead of the previous ad-hoc mix of always-on,
+    // sometimes-gated and inconsistently-named logging switches. "Verbose"
+    // bypasses batching (immediate api.log per line); otherwise lines queue and
+    // flush together.
+    function makeLogger(category, label) {
+        return function (msg) {
+            if (!api.getConfig(`${category}_logEnabled`)) return
+            const line = `[${label}] ${msg}`
+            if (api.getConfig(`${category}_logVerbose`)) rawLogger.logNow(line)
+            else rawLogger.log(line)
+        }
+    }
+    const logIpBlock = makeLogger('ip', 'IP Blocklist')
+    const logRateLimit = makeLogger('rateLimit', 'Rate-limit')
+    const logHeaderBlock = makeLogger('headerBlock', 'Header Block')
+    const logDotRewrite = makeLogger('dotRewrite', 'Dot-rewrite')
+    const logTarpit = makeLogger('tarpit', 'Tarpit')
+    const logBackend = makeLogger('backend', 'Backend Sync')
+
+    const ipStore = new IPStore(api, logIpBlock, logRateLimit)
     const rateLimiter = createRateLimiter(api, ipStore)
-    const tarpit = createTarpit(api)
-    const backendClient = createBackendClient(api)
+    const tarpit = createTarpit(api, logTarpit)
+    const backendClient = createBackendClient(api, logBackend)
 
     let worker = null
     let refreshTimer = null
@@ -118,7 +147,9 @@ exports.init = api => {
     let headerCompiled = { compiled: {}, errors: [] }
     const unsubscribers = []
 
-    function log(msg) { api.log('[security-suite]', msg) }
+    // Kept for the worker build/load messages below, which are all part of the
+    // IP Blocklist feature.
+    const log = logIpBlock
 
     function buildSources() {
         const config = api.getConfig()
@@ -160,7 +191,8 @@ exports.init = api => {
         worker.on('message', async msg => {
             switch (msg.type) {
                 case 'debug':
-                    if (api.getConfig('ip_debugLog')) log(msg.msg)
+                    // Fine-grained worker detail only shown in verbose mode, same as before.
+                    if (api.getConfig('ip_logVerbose')) log(msg.msg)
                     break
                 case 'log':
                     log(msg.msg)
@@ -200,7 +232,7 @@ exports.init = api => {
 
         unsubscribers.push(api.subscribeConfig('headerBlock_headers', v => {
             headerCompiled = headerBlocker.compileHeaderRules(v)
-            for (const e of headerCompiled.errors) log(`header-blocker: ${e}`)
+            for (const e of headerCompiled.errors) logHeaderBlock(`invalid rule: ${e}`)
         }))
 
         unsubscribers.push(api.subscribeConfig('whitelist', v => ipStore.setWhitelist(v)))
@@ -232,7 +264,10 @@ exports.init = api => {
     const cancelNewSocket = api.events.on('newSocket', ({ ip }) => {
         const res = ipStore.checkIP(ip)
         if (!res.blocked) return
-        if (api.getConfig('ip_logBlocked')) log(`blocked at socket: ${ip} (${res.source})`)
+        // Log under whichever feature actually made the call, instead of the old
+        // internal source tag ('bulk'/'dynamic') that meant nothing to a reader.
+        if (res.source === 'dynamic') logRateLimit(`blocked at socket: ${ip} (rate-limit ban)`)
+        else logIpBlock(`blocked at socket: ${ip} (IP blocklist)`)
         backendClient.reportViolation(ip, res.source === 'dynamic' ? 'rateLimitBan' : 'ipBlocklist')
         return 'security-suite'
     })
@@ -247,7 +282,8 @@ exports.init = api => {
             tarpit.unload()
             backendClient.stop()
             ipStore.cleanup()
-            log('unloaded')
+            rawLogger.logNow('unloaded')
+            rawLogger.unload()
         },
 
         middleware(ctx) {
@@ -255,7 +291,7 @@ exports.init = api => {
             // always run, even for whitelisted IPs -- unlike everything below them.
             cors.applyCorsIfNeeded(ctx, api.getConfig('cors_paths'))
             dotRewrite.rewriteDotPath(ctx, api.getConfig('dotRewrite_paths'), (oldPath, newPath) => {
-                if (api.getConfig('dotRewrite_logging') !== false) log(`path rewrite ${oldPath} -> ${newPath}`)
+                logDotRewrite(`${oldPath} -> ${newPath}`)
             })
 
             if (ipStore.isWhitelisted(ctx.ip)) return
@@ -263,7 +299,7 @@ exports.init = api => {
             const headerMatch = headerBlocker.matchHeaders(ctx, headerCompiled.compiled)
             if (headerMatch) {
                 disconnect(ctx, 'security-suite')
-                log(`blocked ${ctx.ip} for header ${headerMatch.name}`)
+                logHeaderBlock(`blocked ${ctx.ip} for header ${headerMatch.name}`)
                 backendClient.reportViolation(ctx.ip, 'headerBlock')
                 return ctx.stop()
             }

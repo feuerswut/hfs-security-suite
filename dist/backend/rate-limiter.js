@@ -18,6 +18,15 @@ exports.configSchema = {
         placeholder: "no, consider all requests",
         helperText: "you can specify HTTP error codes separated by | (pipe), and only those will be counted, or use * for all",
     },
+    rateLimit_logEnabled: {
+        type: 'boolean', label: "Enable logging", defaultValue: true,
+        helperText: "Log bans, lifted bans and connections blocked by an active ban (batched, flushed every couple of minutes).",
+    },
+    rateLimit_logVerbose: {
+        type: 'boolean', label: "Verbose logging", defaultValue: false,
+        helperText: "Log every event immediately instead of batching.",
+        showIf: v => v.rateLimit_logEnabled,
+    },
 }
 
 function globToRegExp(pattern) {
