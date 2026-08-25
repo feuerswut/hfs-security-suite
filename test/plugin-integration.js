@@ -110,6 +110,21 @@ function makeMockApi(storageDir, configSchema) {
         },
         setInterval: (...a) => setInterval(...a),
         setTimeout: (...a) => setTimeout(...a),
+        customApiCall(name) {
+            if (name === 'hfsShared') {
+                return [{
+                    requireVersion() { return true },
+                    // Minimal stand-in for hfs-shared's createLogger: no batching,
+                    // just forwards straight to api.log so tests can assert on it.
+                    createLogger(_api, opts) {
+                        const prefix = (opts && opts.tag) || ''
+                        const line = msg => api.log(prefix, msg)
+                        return { log: line, logNow: line, flush() {}, unload() {} }
+                    },
+                }]
+            }
+            return []
+        },
     }
 
     return { api, logs, addBlockCalls, disconnectCalls, eventListeners, store }

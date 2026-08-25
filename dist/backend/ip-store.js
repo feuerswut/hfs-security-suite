@@ -36,11 +36,14 @@ exports.configSchema = {
     ip_enableIPv6: {
         type: 'boolean', label: "Enable IPv6", defaultValue: true,
     },
-    ip_logBlocked: {
-        type: 'boolean', label: "Log blocked IPs", defaultValue: true,
+    ip_logEnabled: {
+        type: 'boolean', label: "Enable logging", defaultValue: true,
+        helperText: "Log blocklist builds/reloads and connections blocked by the IP blocklist (batched, flushed every couple of minutes).",
     },
-    ip_debugLog: {
-        type: 'boolean', label: "Debug log", defaultValue: false,
+    ip_logVerbose: {
+        type: 'boolean', label: "Verbose logging", defaultValue: false,
+        helperText: "Log every event immediately instead of batching, and include fine-grained worker/loading detail.",
+        showIf: v => v.ip_logEnabled,
     },
 }
 
@@ -74,8 +77,14 @@ function readBigInt128(buf, offset) {
 }
 
 class IPStore {
-    constructor(api) {
+    // `log` covers blocklist build/load events (IP Blocklist category); `banLog`
+    // covers dynamic bans, which are issued exclusively by the rate-limiter, so
+    // they're logged under the Rate-limit category instead even though the ban
+    // state itself lives here.
+    constructor(api, log, banLog) {
         this.api = api
+        this.log = log || (() => {})
+        this.banLog = banLog || this.log
         this.storageDir = api && api.storageDir
         this.bitmap = null          // RoaringBitmap32, O(1) IPv4
         // { starts: Uint32Array, ends: Uint32Array, length } instead of an array
@@ -97,16 +106,6 @@ class IPStore {
             hitsWhitelist: 0, hitsDynamic: 0, hitsBulk: 0,
             local: 0, errors: 0,
         }
-    }
-
-    _debug(msg) {
-        try {
-            if (this.api.getConfig('ip_debugLog')) this.api.log(`[ip-store] ${msg}`)
-        } catch (_) {}
-    }
-
-    _log(msg) {
-        try { this.api.log(`[ip-store] ${msg}`) } catch (_) {}
     }
 
     // --- bulk list loading -------------------------------------------------
@@ -131,9 +130,9 @@ class IPStore {
                     // The worker wrote a .roar but this process cannot read it (missing
                     // or ABI-mismatched addon). There is no ranges file to fall back to,
                     // so say so loudly instead of silently serving an empty blocklist.
-                    this._log('WARNING: roaring bitmap on disk could not be loaded; trying sorted-ranges file')
+                    this.log('WARNING: roaring bitmap on disk could not be loaded; trying sorted-ranges file')
                     ok = await this._loadRanges()
-                    if (!ok) this._log('ERROR: no usable IPv4 blocklist on disk - rebuild required (set Lookup mode to "Sorted ranges" if the native addon is unavailable)')
+                    if (!ok) this.log('ERROR: no usable IPv4 blocklist on disk - rebuild required (set Lookup mode to "Sorted ranges" if the native addon is unavailable)')
                 }
             } else {
                 ok = await this._loadRanges()
@@ -144,7 +143,7 @@ class IPStore {
             this.ready = ok || !!(this.ipv6Ranges && this.ipv6Ranges.length)
             return this.ready
         } catch (err) {
-            this._log(`load error: ${err.message}`)
+            this.log(`load error: ${err.message}`)
             return false
         }
     }
@@ -154,17 +153,17 @@ class IPStore {
         if (!fs.existsSync(p)) return false
         const roaring = loadRoaring()
         if (!roaring.cls) {
-            this._log(`roaring unavailable: ${roaring.detail}`)
+            this.log(`roaring unavailable: ${roaring.detail}`)
             return false
         }
         try {
             const buf = await fsp.readFile(p)
             this.bitmap = roaring.cls.deserialize(buf, false)
             this.bulkFormat = 'roaring'
-            this._debug(`IPv4 roaring bitmap loaded via [${roaring.source}], ${(buf.length / 1048576).toFixed(1)} MB serialized`)
+            this.log(`IPv4 roaring bitmap loaded via [${roaring.source}], ${(buf.length / 1048576).toFixed(1)} MB serialized`)
             return true
         } catch (err) {
-            this._log(`roaring deserialize failed: ${err.message}`)
+            this.log(`roaring deserialize failed: ${err.message}`)
             this.bitmap = null
             return false
         }
@@ -174,7 +173,7 @@ class IPStore {
         const p = path.join(this.storageDir, 'ipv4-ranges.bin')
         if (!fs.existsSync(p)) return false
         const buf = await fsp.readFile(p)
-        if (buf.length % 8) { this._log('ipv4-ranges.bin is truncated'); return false }
+        if (buf.length % 8) { this.log('ipv4-ranges.bin is truncated'); return false }
         const count = buf.length / 8
         const starts = new Uint32Array(count)
         const ends = new Uint32Array(count)
@@ -184,7 +183,7 @@ class IPStore {
         }
         this.ipv4Ranges = { starts, ends, length: count }
         this.bulkFormat = 'ranges'
-        this._debug(`IPv4 sorted ranges loaded: ${count} merged ranges`)
+        this.log(`IPv4 sorted ranges loaded: ${count} merged ranges`)
         return true
     }
 
@@ -192,13 +191,13 @@ class IPStore {
         const p = path.join(this.storageDir, 'ipv6.bin')
         if (!fs.existsSync(p)) return
         const buf = await fsp.readFile(p)
-        if (buf.length % 32) { this._log('ipv6.bin is truncated'); return }
+        if (buf.length % 32) { this.log('ipv6.bin is truncated'); return }
         const count = buf.length / 32
         const out = new Array(count)
         for (let i = 0; i < count; i++)
             out[i] = { start: readBigInt128(buf, i * 32), end: readBigInt128(buf, i * 32 + 16) }
         this.ipv6Ranges = out
-        this._debug(`IPv6 ranges loaded: ${count}`)
+        this.log(`IPv6 ranges loaded: ${count}`)
     }
 
     // --- whitelist ---------------------------------------------------------
@@ -231,7 +230,7 @@ class IPStore {
         }
         this.whitelistV4 = utils.mergeRanges(this.whitelistV4, 1)
         this.whitelistV6 = utils.mergeRanges(this.whitelistV6, 1n)
-        this._debug(`whitelist: ${entries.length} entries (${this.whitelistV4.length} v4, ${this.whitelistV6.length} v6 ranges)`)
+        this.log(`whitelist: ${entries.length} entries (${this.whitelistV4.length} v4, ${this.whitelistV6.length} v6 ranges)`)
     }
 
     _isWhitelisted(ip, ipLong, addr6) {
@@ -275,7 +274,7 @@ class IPStore {
             const t = setTimeout(() => {
                 this.dynamicBans.delete(ip)
                 this.banTimers.delete(ip)
-                this._debug(`ban lifted ${ip}`)
+                this.banLog(`ban lifted ${ip}`)
             }, ms)
             if (t.unref) t.unref()
             this.banTimers.set(ip, t)
@@ -287,10 +286,10 @@ class IPStore {
                 { ip, comment: 'security-suite', ...(expire ? { expire: new Date(expire) } : {}) },
                 { comment: 'security-suite' })
         } catch (err) {
-            this._debug(`addBlock failed for ${ip}: ${err.message}`)
+            this.banLog(`addBlock failed for ${ip}: ${err.message}`)
         }
 
-        if (isNew) this._log(`banned ${ip}${ms ? ` for ${Math.round(ms / 1000)}s` : ' (no expiry)'}`)
+        if (isNew) this.banLog(`banned ${ip}${ms ? ` for ${Math.round(ms / 1000)}s` : ' (no expiry)'}`)
     }
 
     removeDynamicBan(ip) {

@@ -32,4 +32,13 @@ exports.configSchema = {
             regexp: { label: 'Reg.exp.', helperText: 'If the header value matches this reg.exp. (case-insensitive), the request is blocked' },
         },
     },
+    headerBlock_logEnabled: {
+        type: 'boolean', label: "Enable logging", defaultValue: true,
+        helperText: "Log invalid rules and requests blocked for matching a header (batched, flushed every couple of minutes).",
+    },
+    headerBlock_logVerbose: {
+        type: 'boolean', label: "Verbose logging", defaultValue: false,
+        helperText: "Log every event immediately instead of batching.",
+        showIf: v => v.headerBlock_logEnabled,
+    },
 }
