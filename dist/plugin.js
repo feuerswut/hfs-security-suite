@@ -2,11 +2,11 @@
 // hfs-dot-rewrite-paths, hfs-ip-blocklist and hfs-tarpit (all GPLv3) into one
 // AGPL-3.0 plugin. See LICENSE for the full attribution notice and texts.
 exports.description = "Combined IP blocklist, rate-limit banning, header blocking, CORS-by-path, dot-path rewriting and tarpit/honeypot in one plugin"
-exports.version = 0.7
+exports.version = 0.8
 exports.apiRequired = 13
 exports.repo = "feuerswut/hfs-security-suite"
 exports.author = "feuerswut"
-exports.depend = [{ repo: "feuerswut/hfs-shared" }]
+exports.depend = [{ "repo": "feuerswut/hfs-shared", "version": 1 }]
 exports.changelog = [
     { version: 0.7, message: "Logging now goes through hfs-shared's batched logger, which clusters near-identical lines (e.g. repeated 'blocked at socket' hits) into one summarized line instead of one per event, flushed every couple of minutes instead of per connection. Each feature -- IP blocklist, rate-limit banning, header blocking, dot-path rewriting, tarpit and backend sync -- has its own 'Enable logging' / 'Verbose logging' pair instead of the old scattered, inconsistent toggles, and the feature name is appended once at the end of the line instead of a bracketed prefix. The socket-level block line also no longer prints the meaningless internal source tag '(bulk)'; the feature name it's logged under already says why it was blocked." },
     { version: 0.5, message: "The roaring-bitmap loader only checked that a native build exported the right method names, not that they actually worked -- a cross-compiled 32-bit ARM (armv7) build loaded fine but threw 'Invalid RoaringBitmap32 object' the moment addRange was called during parsing. It now runs a real functional self-test (add/has/serialize/deserialize a tiny bitmap) before trusting any prebuilt binary, so a broken build on any platform now falls back to the sorted-ranges lookup automatically instead of crashing." },
