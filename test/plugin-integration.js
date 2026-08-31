@@ -51,6 +51,7 @@ function makeMockApi(storageDir, configSchema) {
     }
 
     const api = {
+        id: 'security-suite',
         storageDir,
         Const: { API_VERSION: 13 },
         getConfig(key) {
@@ -89,6 +90,12 @@ function makeMockApi(storageDir, configSchema) {
                     const idx = arr.indexOf(entry)
                     if (idx !== -1) arr.splice(idx, 1)
                 }
+            },
+            // Used by dist/lib/hfs-shared-guard.js to announce that this
+            // plugin's config just flipped between the warning and its real
+            // fields (or vice versa).
+            emit(name, payload) {
+                for (const entry of (eventListeners[name] || []).slice()) entry.cb(payload)
             },
         },
         require(modulePath) {

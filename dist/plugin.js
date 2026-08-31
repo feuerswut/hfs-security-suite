@@ -2,12 +2,13 @@
 // hfs-dot-rewrite-paths, hfs-ip-blocklist and hfs-tarpit (all GPLv3) into one
 // AGPL-3.0 plugin. See LICENSE for the full attribution notice and texts.
 exports.description = "Combined IP blocklist, rate-limit banning, header blocking, CORS-by-path, dot-path rewriting and tarpit/honeypot in one plugin"
-exports.version = 0.8
+exports.version = 1.0
 exports.apiRequired = 13
 exports.repo = "feuerswut/hfs-security-suite"
 exports.author = "feuerswut"
-exports.depend = [{ "repo": "feuerswut/hfs-shared", "version": 1 }]
 exports.changelog = [
+    { version: 1.0, message: "The hfs-shared warning now gives the specific reason (missing, stopped, uninstalled, version mismatch) instead of one generic message, and reappears/clears more reliably via a 10s fallback poll alongside its event listeners. Vendored guard moved to lib/dependency.js." },
+    { version: 0.9, message: "Removed the hard exports.depend on hfs-shared. That field is what let the old unquoted-key JSON typo silently never enforce, and once fixed in Hotfix 0.8, it started enforcing for real: HFS checks exports.depend before it will even require() a plugin's module, so anyone with a missing or outdated hfs-shared lost this plugin outright on their next update, with nothing in the admin panel explaining why -- init() never runs, so there's no way to show a message. Now init() always runs and checks for hfs-shared itself. If it's missing or too old, this plugin's entire config is replaced with a single warning (a show_html field) stating the plugin is not currently running and why, with a link to more information, instead of the module failing to load. The warning clears itself automatically and the plugin starts normally with its full config restored the moment hfs-shared starts or is updated -- no restart needed, and no more repeat of the 'hotfix 0.8 broke my upgrade' failure mode." },
     { version: 0.7, message: "Logging now goes through hfs-shared's batched logger, which clusters near-identical lines (e.g. repeated 'blocked at socket' hits) into one summarized line instead of one per event, flushed every couple of minutes instead of per connection. Each feature -- IP blocklist, rate-limit banning, header blocking, dot-path rewriting, tarpit and backend sync -- has its own 'Enable logging' / 'Verbose logging' pair instead of the old scattered, inconsistent toggles, and the feature name is appended once at the end of the line instead of a bracketed prefix. The socket-level block line also no longer prints the meaningless internal source tag '(bulk)'; the feature name it's logged under already says why it was blocked." },
     { version: 0.5, message: "The roaring-bitmap loader only checked that a native build exported the right method names, not that they actually worked -- a cross-compiled 32-bit ARM (armv7) build loaded fine but threw 'Invalid RoaringBitmap32 object' the moment addRange was called during parsing. It now runs a real functional self-test (add/has/serialize/deserialize a tiny bitmap) before trusting any prebuilt binary, so a broken build on any platform now falls back to the sorted-ranges lookup automatically instead of crashing." },
     { version: 0.4, message: "Fixed high memory use when building the sorted-ranges fallback for a large blocklist: it built a JS array of {start,end} objects (~50+ bytes/range) both while sorting and permanently afterward. Replaced with a packed typed-array representation (8 bytes/range) for both the worker's build step and the plugin's resident lookup structure, verified against a 500k-range list under a 256MB heap limit." },
@@ -15,6 +16,8 @@ exports.changelog = [
     { version: 0.2, message: "Master 'Enable backend integration' toggle, off by default, gating the backend URL/API key/report/fetch fields and their actual runtime behavior." },
     { version: 0.1, message: "Initial release, combining six plugins into one middleware plus one newSocket listener." },
 ]
+
+const { awaitHfsShared } = require('./lib/dependency')
 
 const fs = require('fs')
 const path = require('path')
@@ -109,8 +112,28 @@ function processingSignature(config) {
 exports.init = api => {
     const { disconnect } = api.require('./connections')
 
-    const shared = api.customApiCall('hfsShared')[0]
-    shared.requireVersion('^1.0.0')
+    // exports.init must return synchronously, but the real logic below can
+    // only start once hfs-shared is confirmed present (see awaitHfsShared).
+    // These two default to no-ops so HFS always gets a valid instance back;
+    // they're overwritten with the real implementations once startRealPlugin
+    // runs, whether that happens immediately or only after hfs-shared shows
+    // up later.
+    let realUnload = () => {}
+    let realMiddleware = () => {}
+
+    awaitHfsShared(api, exports.config, '^1.0.0', shared => {
+        const real = startRealPlugin(api, shared, disconnect)
+        realUnload = real.unload
+        realMiddleware = real.middleware
+    })
+
+    return {
+        unload() { realUnload() },
+        middleware(ctx) { return realMiddleware(ctx) },
+    }
+}
+
+function startRealPlugin(api, shared, disconnect) {
     // Flushed at most every 2 minutes (see batchWindowMs) instead of one
     // api.log() call per connection -- a noisy source (a scanner hammering a
     // blocked range) used to flood the log with one line per rejected socket.
@@ -259,7 +282,7 @@ exports.init = api => {
             if (backendShouldRun(v)) backendClient.start()
             else backendClient.stop()
         }))
-    })()
+    })().catch(e => log(`startup error: ${e && e.stack || e}`))
 
     // Earliest possible reject: runs before HTTP parsing even starts, for both
     // the bulk blocklist and rate-limiter-issued dynamic bans. Kept separate
